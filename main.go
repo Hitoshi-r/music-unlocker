@@ -18,9 +18,11 @@ func main() {
 	// Create application with options
 	err := wails.Run(&options.App{
 		EnableDefaultContextMenu: true,
-		Title:                    "music-unlocker",
-		Width:                    1024,
-		Height:                   768,
+		Title:                    "Music Unlocker",
+		Width:                    1180,
+		Height:                   780,
+		MinWidth:                 980,
+		MinHeight:                680,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

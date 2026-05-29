@@ -27,12 +27,7 @@ func (d *QMCDecoder) Name() string {
 }
 
 func (d *QMCDecoder) Extensions() []string {
-	return []string{
-		".qmc0",
-		".qmc3",
-		".qmcflac",
-		".qmcogg",
-	}
+	return []string{".qmc0", ".qmc3", ".qmcflac", ".qmcogg"}
 }
 
 func (d *QMCDecoder) Decode(
@@ -43,12 +38,9 @@ func (d *QMCDecoder) Decode(
 	ctx context.Context,
 	onProgress ProgressCallback,
 ) (*DecodeResult, error) {
-	ext := strings.ToLower(filepath.Ext(inputPath))
-
-	switch ext {
+	switch strings.ToLower(filepath.Ext(inputPath)) {
 	case ".qmc0", ".qmc3", ".qmcflac", ".qmcogg":
 		return d.decodeOldQMC(inputPath, outputDir, outputFormat, bitrate, ctx, onProgress)
-
 	default:
 		return nil, errors.New("未知 QMC 格式")
 	}
@@ -62,11 +54,9 @@ func (d *QMCDecoder) decodeOldQMC(
 	ctx context.Context,
 	onProgress ProgressCallback,
 ) (*DecodeResult, error) {
-
 	if outputDir == "" {
 		outputDir = filepath.Dir(inputPath)
 	}
-
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return nil, err
 	}
@@ -78,7 +68,7 @@ func (d *QMCDecoder) decodeOldQMC(
 	defer file.Close()
 
 	name := strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))
-	rawPath := filepath.Join(outputDir, name+"_qmc_raw.bin")
+	rawPath := converter.UniqueOutputPath(outputDir, name+"_qmc_raw", ".bin")
 
 	outFile, err := os.Create(rawPath)
 	if err != nil {
@@ -100,16 +90,14 @@ func (d *QMCDecoder) decodeOldQMC(
 		select {
 		case <-ctx.Done():
 			outFile.Close()
-			os.Remove(rawPath)
+			_ = os.Remove(rawPath)
 			return nil, errors.New("任务已取消")
 		default:
 		}
 
 		n, readErr := file.Read(buffer)
-
 		if n > 0 {
 			data := buffer[:n]
-
 			for i := 0; i < n; i++ {
 				index := (int(processed) + i) & 0x7fff
 				key := qmcKey[index%len(qmcKey)]
@@ -118,12 +106,11 @@ func (d *QMCDecoder) decodeOldQMC(
 
 			if _, err := outFile.Write(data); err != nil {
 				outFile.Close()
-				os.Remove(rawPath)
+				_ = os.Remove(rawPath)
 				return nil, err
 			}
 
 			processed += int64(n)
-
 			if totalSize > 0 && onProgress != nil {
 				percent := int(processed * 90 / totalSize)
 				if percent > 90 {
@@ -139,30 +126,21 @@ func (d *QMCDecoder) decodeOldQMC(
 		if readErr == io.EOF {
 			break
 		}
-
 		if readErr != nil {
 			outFile.Close()
-			os.Remove(rawPath)
+			_ = os.Remove(rawPath)
 			return nil, readErr
 		}
 	}
 
 	if err := outFile.Close(); err != nil {
-		os.Remove(rawPath)
+		_ = os.Remove(rawPath)
 		return nil, err
 	}
 
-	finalPath, err := finishQMCOutput(
-		rawPath,
-		outputDir,
-		name,
-		outputFormat,
-		bitrate,
-	)
-
-	os.Remove(rawPath)
-
+	finalPath, err := finishQMCOutput(rawPath, outputDir, name, outputFormat, bitrate)
 	if err != nil {
+		_ = os.Remove(rawPath)
 		return nil, err
 	}
 
@@ -175,27 +153,7 @@ func (d *QMCDecoder) decodeOldQMC(
 		OutputPath: finalPath,
 		Platform:   d.Name(),
 		Success:    true,
-		Message:    "QMC 解密完成",
-	}, nil
-}
-
-func (d *QMCDecoder) decodeUnsupportedQQNew(
-	inputPath string,
-	outputDir string,
-	ctx context.Context,
-	onProgress ProgressCallback,
-) (*DecodeResult, error) {
-
-	if onProgress != nil {
-		onProgress(100)
-	}
-
-	return &DecodeResult{
-		InputPath:  inputPath,
-		OutputPath: "",
-		Platform:   d.Name(),
-		Success:    false,
-		Message:    "该文件是 QQ 音乐新版 mflac/mgg 加密格式，当前版本暂不支持。",
+		Message:    "QMC 处理完成",
 	}, nil
 }
 
@@ -206,48 +164,17 @@ func finishQMCOutput(
 	outputFormat string,
 	bitrate string,
 ) (string, error) {
-
-	data, err := os.ReadFile(rawPath)
-	if err != nil {
-		return "", err
-	}
-
-	realExt := detectQMCRealExt(data)
-
 	if outputFormat == "" || outputFormat == "auto" || outputFormat == "origin" {
-		finalPath := filepath.Join(outputDir, name+realExt)
-		return finalPath, os.WriteFile(finalPath, data, 0644)
+		realExt, err := converter.DetectAudioExt(rawPath)
+		if err != nil {
+			return "", err
+		}
+		finalPath := converter.UniqueOutputPath(outputDir, name, realExt)
+		if err := os.Rename(rawPath, finalPath); err != nil {
+			return "", err
+		}
+		return finalPath, nil
 	}
 
-	return converter.FinishAudio(
-		rawPath,
-		outputDir,
-		name,
-		outputFormat,
-		bitrate,
-	)
-}
-
-func detectQMCRealExt(data []byte) string {
-	if len(data) >= 4 && string(data[:4]) == "fLaC" {
-		return ".flac"
-	}
-
-	if len(data) >= 4 && string(data[:4]) == "OggS" {
-		return ".ogg"
-	}
-
-	if len(data) >= 4 && string(data[:4]) == "RIFF" {
-		return ".wav"
-	}
-
-	if len(data) >= 3 && string(data[:3]) == "ID3" {
-		return ".mp3"
-	}
-
-	if len(data) >= 2 && data[0] == 0xFF && data[1]&0xE0 == 0xE0 {
-		return ".mp3"
-	}
-
-	return ".mp3"
+	return converter.FinishAudio(rawPath, outputDir, name, outputFormat, bitrate)
 }
