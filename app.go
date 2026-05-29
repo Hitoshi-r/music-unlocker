@@ -31,11 +31,11 @@ func (a *App) startup(ctx context.Context) {
 
 func (a *App) SelectFiles() ([]string, error) {
 	files, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{
-		Title: "选择需要解密的音频文件",
+		Title: "选择需要处理的音频文件",
 		Filters: []runtime.FileFilter{
 			{
-				DisplayName: "加密音频文件",
-				Pattern:     "*.ncm;*.qmc*;*.mflac;*.mgg;*.kgm;*.vpr;*.kwm;*.xm",
+				DisplayName: "支持的音频文件",
+				Pattern:     decoder.FileDialogPattern(),
 			},
 			{
 				DisplayName: "所有文件",
@@ -43,15 +43,12 @@ func (a *App) SelectFiles() ([]string, error) {
 			},
 		},
 	})
-
 	if err != nil {
 		return nil, err
 	}
-
 	if len(files) == 0 {
 		return []string{}, nil
 	}
-
 	return files, nil
 }
 
@@ -64,28 +61,20 @@ func (a *App) SelectFolderFiles() ([]string, error) {
 	}
 
 	var files []string
-
-	filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
+	err = filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
 			return nil
 		}
-
-		if d.IsDir() {
-			return nil
-		}
-
-		ext := strings.ToLower(filepath.Ext(path))
-
-		switch ext {
-		case ".ncm", ".qmc0", ".qmc3", ".qmcflac", ".qmcogg", ".mflac", ".mgg", ".kgm", ".vpr", ".kwm", ".xm":
+		if decoder.SupportsPath(path) {
 			files = append(files, path)
 		}
-
 		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	fmt.Println("扫描到文件数量：", len(files))
-
+	fmt.Println("扫描到文件数量:", len(files))
 	return files, nil
 }
 
@@ -93,13 +82,11 @@ func (a *App) SelectOutputDir() (string, error) {
 	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
 		Title: "选择输出目录",
 	})
-
 	if err != nil || dir == "" {
 		return "", err
 	}
 
 	fmt.Println("选择输出目录:", dir)
-
 	return dir, nil
 }
 
@@ -109,7 +96,6 @@ func (a *App) OpenFolder(path string) error {
 	}
 
 	var cmd *exec.Cmd
-
 	switch stdRuntime.GOOS {
 	case "windows":
 		cmd = exec.Command("explorer", path)
@@ -134,7 +120,7 @@ func progressEmit(a *App, path string) decoder.ProgressCallback {
 }
 
 func (a *App) ConvertFile(path string, outputDir string, outputFormat string, bitrate string) (string, error) {
-	fmt.Println("ConvertFile 被调用：", path, outputDir, outputFormat, bitrate)
+	fmt.Println("ConvertFile:", path, outputDir, outputFormat, bitrate)
 
 	if strings.TrimSpace(outputDir) == "" {
 		outputDir = filepath.Dir(path)
@@ -145,56 +131,28 @@ func (a *App) ConvertFile(path string, outputDir string, outputFormat string, bi
 		return "", fmt.Errorf("创建输出目录失败: %v", err)
 	}
 
-	ext := strings.TrimSpace(strings.ToLower(filepath.Ext(path)))
-	fmt.Println("扩展名：", ext)
+	item := decoder.FindByPath(path)
+	if item == nil {
+		return "", fmt.Errorf("当前格式暂不支持")
+	}
 
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.cancelMap[path] = cancel
 	defer delete(a.cancelMap, path)
 
-	var result *decoder.DecodeResult
-	var err error
-
-	switch ext {
-
-	case ".ncm":
-		d := &decoder.NCMDecoder{}
-		result, err = d.Decode(path, outputDir, outputFormat, bitrate, ctx, progressEmit(a, path))
-
-	case ".qmc0", ".qmc3", ".qmcflac", ".qmcogg":
-		d := &decoder.QMCDecoder{}
-		result, err = d.Decode(path, outputDir, outputFormat, bitrate, ctx, progressEmit(a, path))
-
-	case ".mflac", ".mgg":
-		d := &decoder.MFLACDecoder{}
-		result, err = d.Decode(path, outputDir, outputFormat, bitrate, ctx, progressEmit(a, path))
-
-	case ".kgm", ".vpr":
-		d := &decoder.KGMDecoder{}
-		result, err = d.Decode(path, outputDir, outputFormat, bitrate, ctx, progressEmit(a, path))
-
-	case ".kwm":
-		d := &decoder.KWMDecoder{}
-		result, err = d.Decode(path, outputDir, outputFormat, bitrate, ctx, progressEmit(a, path))
-
-	case ".xm":
-		d := &decoder.XMDecoder{}
-		result, err = d.Decode(path, outputDir, outputFormat, bitrate, ctx, progressEmit(a, path))
-
-	default:
-		return "", fmt.Errorf("❌ 当前格式暂不支持")
-	}
-
+	result, err := item.Decode(path, outputDir, outputFormat, bitrate, ctx, progressEmit(a, path))
 	if err != nil {
-		fmt.Println("Decode 错误：", err)
+		fmt.Println("Decode error:", err)
 		return "", fmt.Errorf(formatError(err))
 	}
-
 	if result == nil {
 		return "", fmt.Errorf("转换失败")
 	}
+	if !result.Success {
+		return "", fmt.Errorf(result.Message)
+	}
 
-	return "✔ " + result.Message + "，输出路径：" + result.OutputPath, nil
+	return result.Message + "，输出路径：" + result.OutputPath, nil
 }
 
 func (a *App) CancelFile(path string) {
@@ -204,51 +162,21 @@ func (a *App) CancelFile(path string) {
 }
 
 func detectPlatform(path string) string {
-	ext := strings.ToLower(filepath.Ext(path))
-
-	switch ext {
-	case ".ncm":
-		return "网易云音乐"
-
-	case ".qmc0", ".qmc3", ".qmcflac", ".qmcogg":
-		return "QQ音乐"
-
-	case ".mflac", ".mgg":
-		return "QQ音乐新版"
-
-	case ".kgm", ".vpr":
-		return "酷狗音乐"
-
-	case ".kwm":
-		return "酷我音乐"
-
-	case ".xm":
-		return "虾米音乐"
-
-	default:
-		return "未知格式"
-	}
+	return decoder.DetectPlatform(path)
 }
 
 func formatError(err error) string {
 	msg := err.Error()
 
 	if strings.Contains(msg, "ffmpeg") {
-		return "转换失败（格式不支持或文件损坏）"
+		return "转换失败：格式不支持或文件损坏"
 	}
-
-	if strings.Contains(msg, "暂不支持") {
+	if strings.Contains(msg, "暂不支持") || strings.Contains(msg, "尚未实现") {
 		return msg
 	}
-
-	if strings.Contains(msg, "尚未实现") {
-		return msg
-	}
-
 	if strings.Contains(msg, "no such file") {
 		return "文件不存在"
 	}
-
 	if strings.Contains(msg, "permission") {
 		return "权限不足"
 	}
