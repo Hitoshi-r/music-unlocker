@@ -6,8 +6,20 @@ export function CancelFile(arg1) {
   return window['go']['main']['App']['CancelFile'](arg1);
 }
 
-export function ConvertFile(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['ConvertFile'](arg1, arg2, arg3, arg4);
+export function ClearQQLoginCache() {
+  return window['go']['main']['App']['ClearQQLoginCache']();
+}
+
+export function ConvertFile(arg1, arg2, arg3, arg4, arg5, arg6, arg7) {
+  return window['go']['main']['App']['ConvertFile'](arg1, arg2, arg3, arg4, arg5, arg6, arg7);
+}
+
+export function GetDefaultOutputDir() {
+  return window['go']['main']['App']['GetDefaultOutputDir']();
+}
+
+export function GetRuntimePlatform() {
+  return window['go']['main']['App']['GetRuntimePlatform']();
 }
 
 export function OpenFolder(arg1) {

@@ -1,4 +1,27 @@
-build/bin
-node_modules
-frontend/dist
-.gocache
+# Build outputs
+/build/bin/
+/dist/
+/frontend/dist/
+
+# Dependencies and caches
+/frontend/node_modules/
+/.gocache/
+
+# Tests and profiling
+coverage.out
+*.test
+*.prof
+*.pprof
+
+# Private local inputs and credentials
+/样本文件/
+.env
+.env.*
+!.env.example
+
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
