@@ -2,12 +2,19 @@
   "$schema": "https://wails.io/schemas/config.v2.json",
   "name": "music-unlocker",
   "outputfilename": "music-unlocker",
-  "frontend:install": "npm install",
+  "frontend:install": "npm ci",
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "auto",
   "author": {
     "name": "Destin",
     "email": "emilydonna6340@gmail.com"
+  },
+  "info": {
+    "companyName": "Music Unlocker",
+    "productName": "Music Unlocker",
+    "productVersion": "1.0.0",
+    "copyright": "Copyright © 2026 Music Unlocker contributors",
+    "comments": "Music Unlocker desktop application"
   }
 }

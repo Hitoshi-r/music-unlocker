@@ -21,8 +21,8 @@ func main() {
 		Title:                    "Music Unlocker",
 		Width:                    1180,
 		Height:                   780,
-		MinWidth:                 980,
-		MinHeight:                680,
+		MinWidth:                 720,
+		MinHeight:                560,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

@@ -12,6 +12,12 @@ type DecodeResult struct {
 
 type ProgressCallback func(percent int)
 
+type DecodeOptions struct {
+	QQEKey      string
+	QQCookie    string
+	QQAutoLogin bool
+}
+
 type Decoder interface {
 	Name() string
 	Extensions() []string
@@ -20,6 +26,7 @@ type Decoder interface {
 		outputDir string,
 		outputFormat string,
 		bitrate string,
+		options DecodeOptions,
 		ctx context.Context,
 		onProgress ProgressCallback,
 	) (*DecodeResult, error)

@@ -31,6 +31,7 @@ func (d *KGMDecoder) Decode(
 	outputDir string,
 	outputFormat string,
 	bitrate string,
+	_ DecodeOptions,
 	ctx context.Context,
 	onProgress ProgressCallback,
 ) (*DecodeResult, error) {
@@ -58,8 +59,17 @@ func (d *KGMDecoder) Decode(
 	name := strings.TrimSuffix(filepath.Base(inputPath), filepath.Ext(inputPath))
 	rawPath := filepath.Join(outputDir, name+"_kgm_raw.bin")
 
-	outFile, _ := os.Create(rawPath)
-	defer outFile.Close()
+	outFile, err := os.Create(rawPath)
+	if err != nil {
+		return nil, err
+	}
+	completed := false
+	defer func() {
+		_ = outFile.Close()
+		if !completed {
+			_ = os.Remove(rawPath)
+		}
+	}()
 
 	buffer := make([]byte, 64*1024)
 	var processed int64
@@ -67,7 +77,6 @@ func (d *KGMDecoder) Decode(
 	for {
 		select {
 		case <-ctx.Done():
-			os.Remove(rawPath)
 			return nil, errors.New("任务已取消")
 		default:
 		}
@@ -82,7 +91,9 @@ func (d *KGMDecoder) Decode(
 				data[i] ^= kgmKey[(int(processed)+i)%len(kgmKey)]
 			}
 
-			outFile.Write(data)
+			if _, err := outFile.Write(data); err != nil {
+				return nil, err
+			}
 			processed += int64(n)
 		}
 
@@ -93,8 +104,12 @@ func (d *KGMDecoder) Decode(
 			return nil, err
 		}
 	}
+	if err := outFile.Close(); err != nil {
+		return nil, err
+	}
 
 	finalPath, err := converter.FinishAudio(
+		ctx,
 		rawPath,
 		outputDir,
 		name,
@@ -105,6 +120,7 @@ func (d *KGMDecoder) Decode(
 	if err != nil {
 		return nil, err
 	}
+	completed = true
 
 	return &DecodeResult{
 		InputPath:  inputPath,

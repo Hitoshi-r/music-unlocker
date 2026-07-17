@@ -3,7 +3,13 @@
 
 export function CancelFile(arg1:string):Promise<void>;
 
-export function ConvertFile(arg1:string,arg2:string,arg3:string,arg4:string):Promise<string>;
+export function ClearQQLoginCache():Promise<void>;
+
+export function ConvertFile(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string,arg7:boolean):Promise<string>;
+
+export function GetDefaultOutputDir():Promise<string>;
+
+export function GetRuntimePlatform():Promise<string>;
 
 export function OpenFolder(arg1:string):Promise<void>;
 

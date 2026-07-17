@@ -30,6 +30,7 @@ func (d *PlainAudioDecoder) Decode(
 	outputDir string,
 	outputFormat string,
 	bitrate string,
+	_ DecodeOptions,
 	ctx context.Context,
 	onProgress ProgressCallback,
 ) (*DecodeResult, error) {
@@ -54,7 +55,7 @@ func (d *PlainAudioDecoder) Decode(
 		return nil, err
 	}
 
-	finalPath, err := converter.FinishAudio(rawPath, outputDir, name, outputFormat, bitrate)
+	finalPath, err := converter.FinishAudio(ctx, rawPath, outputDir, name, outputFormat, bitrate)
 	if err != nil {
 		os.Remove(rawPath)
 		return nil, err

@@ -30,6 +30,7 @@ func (d *KWMDecoder) Decode(
 	outputDir string,
 	outputFormat string,
 	bitrate string,
+	_ DecodeOptions,
 	ctx context.Context,
 	onProgress ProgressCallback,
 ) (*DecodeResult, error) {
@@ -61,7 +62,13 @@ func (d *KWMDecoder) Decode(
 	if err != nil {
 		return nil, err
 	}
-	defer outFile.Close()
+	completed := false
+	defer func() {
+		_ = outFile.Close()
+		if !completed {
+			_ = os.Remove(rawPath)
+		}
+	}()
 
 	// 跳过头部（常见）
 	file.Seek(0x400, io.SeekStart)
@@ -76,7 +83,6 @@ func (d *KWMDecoder) Decode(
 	for {
 		select {
 		case <-ctx.Done():
-			os.Remove(rawPath)
 			return nil, errors.New("任务已取消")
 		default:
 		}
@@ -92,7 +98,9 @@ func (d *KWMDecoder) Decode(
 				block.Decrypt(data, data)
 			}
 
-			outFile.Write(data)
+			if _, err := outFile.Write(data); err != nil {
+				return nil, err
+			}
 		}
 
 		if err == io.EOF {
@@ -102,8 +110,12 @@ func (d *KWMDecoder) Decode(
 			return nil, err
 		}
 	}
+	if err := outFile.Close(); err != nil {
+		return nil, err
+	}
 
 	finalPath, err := converter.FinishAudio(
+		ctx,
 		rawPath,
 		outputDir,
 		name,
@@ -114,6 +126,7 @@ func (d *KWMDecoder) Decode(
 	if err != nil {
 		return nil, err
 	}
+	completed = true
 
 	return &DecodeResult{
 		InputPath:  inputPath,

@@ -37,6 +37,7 @@ func (d *NCMDecoder) Decode(
 	outputDir string,
 	outputFormat string,
 	bitrate string,
+	_ DecodeOptions,
 	ctx context.Context,
 	onProgress ProgressCallback,
 ) (*DecodeResult, error) {
@@ -255,8 +256,10 @@ func (d *NCMDecoder) Decode(
 
 		fmt.Println("最终输出文件:", finalPath)
 
-		if err := converter.ConvertAudio(rawPath, finalPath, outputFormat, bitrate); err != nil {
+		if err := converter.ConvertAudio(ctx, rawPath, finalPath, outputFormat, bitrate); err != nil {
 			fmt.Println("FFmpeg 转码失败:", err)
+			_ = os.Remove(rawPath)
+			_ = os.Remove(finalPath)
 			return nil, err
 		}
 
