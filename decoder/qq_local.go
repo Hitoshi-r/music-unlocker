@@ -14,6 +14,7 @@ const maxQQAuthstLength = 8 * 1024
 
 type qqLocalCredentials struct {
 	UIN              string
+	WebKeyCandidates []string
 	AuthstCandidates []string
 }
 
@@ -34,7 +35,7 @@ func fetchQQLocalEKey(ctx context.Context, songMID string, filename string) (str
 	if err != nil {
 		return "", fmt.Errorf("无法使用本机 QQ 音乐登录状态: %w", err)
 	}
-	if len(credentials.AuthstCandidates) == 0 {
+	if len(credentials.WebKeyCandidates) == 0 && len(credentials.AuthstCandidates) == 0 {
 		return "", errors.New("本机 QQ 音乐登录状态中没有可用令牌")
 	}
 
@@ -44,6 +45,18 @@ func fetchQQLocalEKey(ctx context.Context, songMID string, filename string) (str
 	}
 	cookie := "uin=" + uin
 	var lastErr error
+	for _, webKey := range credentials.WebKeyCandidates {
+		select {
+		case <-ctx.Done():
+			return "", errors.New("任务已取消")
+		default:
+		}
+		ekey, requestErr := fetchQQWebEKey(ctx, songMID, filename, cookie+"; "+webKey)
+		if requestErr == nil && strings.TrimSpace(ekey) != "" {
+			return ekey, nil
+		}
+		lastErr = requestErr
+	}
 	for _, authst := range credentials.AuthstCandidates {
 		select {
 		case <-ctx.Done():
@@ -129,6 +142,7 @@ func ClearQQMusicLoginCache() {
 func cloneQQLocalCredentials(credentials qqLocalCredentials) qqLocalCredentials {
 	return qqLocalCredentials{
 		UIN:              credentials.UIN,
+		WebKeyCandidates: append([]string(nil), credentials.WebKeyCandidates...),
 		AuthstCandidates: append([]string(nil), credentials.AuthstCandidates...),
 	}
 }
@@ -256,6 +270,11 @@ func isPlausibleQQAuthst(value string) bool {
 	if len(value) < 16 || len(value) > maxQQAuthstLength {
 		return false
 	}
+	// Query strings such as "0&cmd=getsonginfo&qq=..." are request
+	// parameters, not reusable authst credentials.
+	if strings.Contains(value, "&") {
+		return false
+	}
 	alphanumeric := 0
 	for i := 0; i < len(value); i++ {
 		char := value[i]
@@ -267,6 +286,70 @@ func isPlausibleQQAuthst(value string) bool {
 		}
 	}
 	return alphanumeric >= 12
+}
+
+type qqWebKeyMarker struct {
+	name   string
+	marker qqAuthstMarker
+}
+
+func extractQQWebKeyCandidates(data []byte) []string {
+	markers := []qqWebKeyMarker{
+		{name: "qqmusic_key", marker: qqAuthstMarker{value: []byte(`"qqmusic_key":"`), quoted: true}},
+		{name: "qqmusic_key", marker: qqAuthstMarker{value: []byte(`"qqmusic_key": "`), quoted: true}},
+		{name: "qqmusic_key", marker: qqAuthstMarker{value: []byte(`\"qqmusic_key\":\"`), quoted: true, escaped: true}},
+		{name: "qqmusic_key", marker: qqAuthstMarker{value: []byte(`\"qqmusic_key\": \"`), quoted: true, escaped: true}},
+		{name: "qqmusic_key", marker: qqAuthstMarker{value: []byte("qqmusic_key=")}},
+		{name: "qm_keyst", marker: qqAuthstMarker{value: []byte(`"qm_keyst":"`), quoted: true}},
+		{name: "qm_keyst", marker: qqAuthstMarker{value: []byte(`"qm_keyst": "`), quoted: true}},
+		{name: "qm_keyst", marker: qqAuthstMarker{value: []byte(`\"qm_keyst\":\"`), quoted: true, escaped: true}},
+		{name: "qm_keyst", marker: qqAuthstMarker{value: []byte(`\"qm_keyst\": \"`), quoted: true, escaped: true}},
+		{name: "qm_keyst", marker: qqAuthstMarker{value: []byte("qm_keyst=")}},
+	}
+
+	seen := make(map[string]struct{})
+	results := make([]string, 0, 4)
+	add := func(name string, value string) {
+		value = strings.TrimSpace(value)
+		if !isPlausibleQQWebKey(value) {
+			return
+		}
+		if _, exists := seen[value]; exists {
+			return
+		}
+		seen[value] = struct{}{}
+		results = append(results, name+"="+value)
+	}
+
+	for _, candidate := range markers {
+		for _, value := range extractMarkedASCIIValues(data, candidate.marker) {
+			add(candidate.name, value)
+		}
+		if !candidate.marker.escaped {
+			for _, value := range extractMarkedUTF16LEValues(data, candidate.marker) {
+				add(candidate.name, value)
+			}
+		}
+	}
+	return results
+}
+
+func isPlausibleQQWebKey(value string) bool {
+	if len(value) < 24 || len(value) > maxQQAuthstLength {
+		return false
+	}
+	upper := strings.ToUpper(value)
+	if !strings.HasPrefix(upper, "Q_H_L_") && !strings.HasPrefix(upper, "W_X_") {
+		return false
+	}
+	for _, char := range value {
+		if (char >= '0' && char <= '9') || (char >= 'a' && char <= 'z') ||
+			(char >= 'A' && char <= 'Z') || char == '_' || char == '-' || char == '=' || char == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func parseQQMusicUIN(data []byte) string {

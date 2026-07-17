@@ -6,6 +6,14 @@ export function CancelFile(arg1) {
   return window['go']['main']['App']['CancelFile'](arg1);
 }
 
+export function CheckLocalQQMusicLogin(arg1) {
+  return window['go']['main']['App']['CheckLocalQQMusicLogin'](arg1);
+}
+
+export function CheckQQMusicCookie(arg1, arg2) {
+  return window['go']['main']['App']['CheckQQMusicCookie'](arg1, arg2);
+}
+
 export function ClearQQLoginCache() {
   return window['go']['main']['App']['ClearQQLoginCache']();
 }

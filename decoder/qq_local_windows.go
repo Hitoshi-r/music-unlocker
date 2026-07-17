@@ -18,22 +18,37 @@ import (
 const (
 	qqMemoryChunkSize    = 1024 * 1024
 	qqMemoryScanLimit    = int64(1024 * 1024 * 1024)
+	qqProcessWebKeyLimit = 8
 	qqProcessAuthstLimit = 8
+	qqWebKeyLimit        = 16
 	qqAuthstLimit        = 16
 )
 
 func getLocalQQMusicCredentials(ctx context.Context) (qqLocalCredentials, error) {
 	credentials := qqLocalCredentials{UIN: readLocalQQMusicUIN()}
-	seen := make(map[string]struct{})
-	addCandidates := func(candidates []string, limit int) {
+	seenWebKeys := make(map[string]struct{})
+	seenAuthsts := make(map[string]struct{})
+	addWebKeys := func(candidates []string, limit int) {
+		for _, candidate := range candidates {
+			if len(credentials.WebKeyCandidates) >= limit {
+				return
+			}
+			if _, exists := seenWebKeys[candidate]; exists {
+				continue
+			}
+			seenWebKeys[candidate] = struct{}{}
+			credentials.WebKeyCandidates = append(credentials.WebKeyCandidates, candidate)
+		}
+	}
+	addAuthsts := func(candidates []string, limit int) {
 		for _, candidate := range candidates {
 			if len(credentials.AuthstCandidates) >= limit {
 				return
 			}
-			if _, exists := seen[candidate]; exists {
+			if _, exists := seenAuthsts[candidate]; exists {
 				continue
 			}
-			seen[candidate] = struct{}{}
+			seenAuthsts[candidate] = struct{}{}
 			credentials.AuthstCandidates = append(credentials.AuthstCandidates, candidate)
 		}
 	}
@@ -49,13 +64,15 @@ func getLocalQQMusicCredentials(ctx context.Context) (qqLocalCredentials, error)
 			return qqLocalCredentials{}, errors.New("任务已取消")
 		default:
 		}
-		candidates, scanErr := scanQQMusicProcess(ctx, processID)
+		webKeys, authsts, scanErr := scanQQMusicProcess(ctx, processID)
 		if scanErr != nil {
 			accessErr = scanErr
 			continue
 		}
-		addCandidates(candidates, qqProcessAuthstLimit)
-		if len(credentials.AuthstCandidates) >= qqProcessAuthstLimit {
+		addWebKeys(webKeys, qqProcessWebKeyLimit)
+		addAuthsts(authsts, qqProcessAuthstLimit)
+		if len(credentials.WebKeyCandidates) >= qqProcessWebKeyLimit &&
+			len(credentials.AuthstCandidates) >= qqProcessAuthstLimit {
 			break
 		}
 	}
@@ -65,10 +82,12 @@ func getLocalQQMusicCredentials(ctx context.Context) (qqLocalCredentials, error)
 	// Always include these candidates: process memory can contain stale login
 	// snapshots even when a newer file-backed token is available.
 	for _, path := range localQQCredentialFiles() {
-		addCandidates(readQQAuthstFile(path), qqAuthstLimit)
+		webKeys, authsts := readQQLocalCredentialFile(path)
+		addWebKeys(webKeys, qqWebKeyLimit)
+		addAuthsts(authsts, qqAuthstLimit)
 	}
 
-	if len(credentials.AuthstCandidates) > 0 {
+	if len(credentials.WebKeyCandidates) > 0 || len(credentials.AuthstCandidates) > 0 {
 		return credentials, nil
 	}
 	if len(processIDs) == 0 {
@@ -113,14 +132,14 @@ func qqMusicProcessIDs() ([]uint32, error) {
 	return processIDs, nil
 }
 
-func scanQQMusicProcess(ctx context.Context, processID uint32) ([]string, error) {
+func scanQQMusicProcess(ctx context.Context, processID uint32) ([]string, []string, error) {
 	process, err := windows.OpenProcess(
 		windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ,
 		false,
 		processID,
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer windows.CloseHandle(process)
 
@@ -128,18 +147,21 @@ func scanQQMusicProcess(ctx context.Context, processID uint32) ([]string, error)
 	defer clearBytes(buffer)
 	const overlapSize = maxQQAuthstLength*2 + 256
 	var (
-		address uintptr
-		total   int64
-		tail    []byte
-		results []string
-		seen    = make(map[string]struct{})
+		address     uintptr
+		total       int64
+		tail        []byte
+		webKeys     []string
+		authsts     []string
+		seenWebKeys = make(map[string]struct{})
+		seenAuthsts = make(map[string]struct{})
 	)
 	defer func() { clearBytes(tail) }()
 
-	for total < qqMemoryScanLimit && len(results) < qqProcessAuthstLimit {
+	for total < qqMemoryScanLimit &&
+		(len(webKeys) < qqProcessWebKeyLimit || len(authsts) < qqProcessAuthstLimit) {
 		select {
 		case <-ctx.Done():
-			return nil, errors.New("任务已取消")
+			return nil, nil, errors.New("任务已取消")
 		default:
 		}
 
@@ -155,10 +177,11 @@ func scanQQMusicProcess(ctx context.Context, processID uint32) ([]string, error)
 		if isQQMemoryReadable(memory) {
 			regionRemaining := memory.RegionSize
 			regionAddress := memory.BaseAddress
-			for regionRemaining > 0 && total < qqMemoryScanLimit && len(results) < qqProcessAuthstLimit {
+			for regionRemaining > 0 && total < qqMemoryScanLimit &&
+				(len(webKeys) < qqProcessWebKeyLimit || len(authsts) < qqProcessAuthstLimit) {
 				select {
 				case <-ctx.Done():
-					return nil, errors.New("任务已取消")
+					return nil, nil, errors.New("任务已取消")
 				default:
 				}
 				readSize := uintptr(len(buffer))
@@ -175,15 +198,25 @@ func scanQQMusicProcess(ctx context.Context, processID uint32) ([]string, error)
 					combined := make([]byte, len(tail)+int(bytesRead))
 					copy(combined, tail)
 					copy(combined[len(tail):], buffer[:bytesRead])
-					for _, candidate := range extractQQAuthstCandidates(combined) {
-						if _, exists := seen[candidate]; exists {
-							continue
-						}
-						seen[candidate] = struct{}{}
-						results = append(results, candidate)
-						if len(results) >= qqProcessAuthstLimit {
+					for _, candidate := range extractQQWebKeyCandidates(combined) {
+						if len(webKeys) >= qqProcessWebKeyLimit {
 							break
 						}
+						if _, exists := seenWebKeys[candidate]; exists {
+							continue
+						}
+						seenWebKeys[candidate] = struct{}{}
+						webKeys = append(webKeys, candidate)
+					}
+					for _, candidate := range extractQQAuthstCandidates(combined) {
+						if len(authsts) >= qqProcessAuthstLimit {
+							break
+						}
+						if _, exists := seenAuthsts[candidate]; exists {
+							continue
+						}
+						seenAuthsts[candidate] = struct{}{}
+						authsts = append(authsts, candidate)
 					}
 					clearBytes(tail)
 					tailStart := len(combined) - overlapSize
@@ -203,7 +236,7 @@ func scanQQMusicProcess(ctx context.Context, processID uint32) ([]string, error)
 		}
 		address = nextAddress
 	}
-	return results, nil
+	return webKeys, authsts, nil
 }
 
 func isQQMemoryReadable(memory windows.MemoryBasicInformation) bool {
@@ -236,6 +269,10 @@ func readLocalQQMusicUIN() string {
 	return ""
 }
 
+func localQQMusicUINForCheck() string {
+	return readLocalQQMusicUIN()
+}
+
 func localQQCredentialFiles() []string {
 	base := localQQMusicDataDir()
 	if base == "" {
@@ -256,20 +293,21 @@ func localQQMusicDataDir() string {
 	return filepath.Join(appData, "Tencent", "QQMusic")
 }
 
-func readQQAuthstFile(path string) []string {
+func readQQLocalCredentialFile(path string) ([]string, []string) {
 	file, err := os.Open(path)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, 32*1024*1024))
 	if err != nil {
 		clearBytes(data)
-		return nil
+		return nil, nil
 	}
-	candidates := extractQQAuthstCandidates(data)
+	webKeys := extractQQWebKeyCandidates(data)
+	authsts := extractQQAuthstCandidates(data)
 	clearBytes(data)
-	return candidates
+	return webKeys, authsts
 }
 
 func clearBytes(data []byte) {

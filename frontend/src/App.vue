@@ -33,10 +33,25 @@
         >
           <div>
             <strong>拖入音频文件</strong>
-            <span>支持标准音频、NCM、QMC1/QMC2、KGM、KWM、XM；QQ MusicEx 可使用本机 QQ 音乐登录状态。</span>
+            <span>支持标准音频、NCM、QMC1/QMC2、KGM、KWM、XM；QQ MusicEx 可使用临时 Cookie 或文件 EKey。</span>
           </div>
           <button @click="selectFiles">选择文件</button>
         </div>
+
+        <section class="task-controls">
+          <h2>任务控制</h2>
+          <div class="task-control-actions">
+            <button class="start" :disabled="isRunning || runnableCount === 0" @click="startConvert">
+              开始转换 {{ runnableCount ? `(${runnableCount})` : '' }}
+            </button>
+            <button class="ghost" :disabled="!isRunning" @click="togglePause">
+              {{ isPaused ? '继续任务' : '暂停任务' }}
+            </button>
+            <button class="ghost danger" :disabled="!isRunning" @click="cancelAll">
+              取消任务
+            </button>
+          </div>
+        </section>
 
         <div class="toolbar">
           <input v-model="keyword" placeholder="搜索文件名、路径或平台" />
@@ -70,6 +85,14 @@
                 <span>{{ file.platform }} · {{ getFileExt(file.path) || '未知扩展名' }}</span>
               </div>
               <div class="file-actions">
+                <button
+                  v-if="file.status === 'failed'"
+                  class="ghost retry-btn"
+                  :disabled="isRunning"
+                  @click="markPending(file)"
+                >
+                  改为待处理
+                </button>
                 <span class="badge">{{ statusLabel(file.status) }}</span>
                 <button class="icon-btn" :disabled="isRunning" title="移除" @click="removeFile(file.id)">×</button>
               </div>
@@ -81,11 +104,11 @@
             <div v-if="showQQAdvanced && isQQEncryptedPath(file.path)" class="file-credential">
               <input
                 v-model="file.qqEKey"
-                :type="showQQSecrets ? 'text' : 'password'"
+                type="password"
                 autocomplete="off"
                 spellcheck="false"
                 :disabled="isRunning"
-                placeholder="此文件专用 EKey（可选；优先于自动登录/Cookie）"
+                placeholder="此文件专用 EKey（可选；优先于 Cookie）"
               />
             </div>
 
@@ -135,20 +158,40 @@
 
         <section class="panel-section">
           <h2>QQ 音乐登录授权</h2>
-          <label v-if="runtimePlatform === 'windows'" class="qq-auto-login">
-            <input v-model="qqAutoLogin" type="checkbox" :disabled="isRunning" />
-            <span>
-              <strong>自动使用本机 QQ 音乐登录状态</strong>
-              <small>适合普通用户；请先打开 Windows QQ 音乐客户端并登录下载歌曲的账号。</small>
-            </span>
-          </label>
+          <!--
+            临时隐藏 QQ 自动授权界面，后台实现仍然保留。
+            后续验证稳定后，将 qqAutoLoginUIEnabled 改为 true 即可恢复。
+          -->
+          <template v-if="qqAutoLoginUIEnabled && runtimePlatform === 'windows'">
+            <label class="qq-auto-login">
+              <input v-model="qqAutoLogin" type="checkbox" :disabled="isRunning" />
+              <span>
+                <strong>自动使用本机 QQ 音乐登录状态</strong>
+                <small>适合普通用户；请先打开 Windows QQ 音乐客户端并登录下载歌曲的账号。</small>
+              </span>
+            </label>
+            <div v-if="qqAutoLogin" class="credential-check-row">
+              <button class="ghost" :disabled="isRunning || localQQChecking" @click="checkLocalQQLogin">
+                {{ localQQChecking ? '检测中…' : '重新检测本机登录' }}
+              </button>
+              <span>{{ cookieProbePath ? `将检测：${getFileName(cookieProbePath)}` : '当前仅检测本机账号和登录状态' }}</span>
+            </div>
+            <p
+              v-if="qqAutoLogin && localQQCheckMessage"
+              class="credential-status"
+              :class="`credential-status-${localQQCheckState}`"
+              role="status"
+            >
+              {{ localQQCheckMessage }}
+            </p>
+          </template>
           <div v-else-if="runtimePlatform" class="platform-notice">
             <strong>{{ runtimePlatform === 'darwin' ? 'macOS 转换已支持' : (isMobileRuntime ? '移动端预览模式' : '当前平台使用手动授权') }}</strong>
             <span v-if="isMobileRuntime">系统不允许读取 QQ 音乐 App 的登录数据；MusicEx 仅接受当前文件的 EKey。</span>
             <span v-else>不扫描 QQ 音乐进程；MusicEx 请使用下方临时 Cookie 或逐文件 EKey。</span>
           </div>
-          <p v-if="runtimePlatform === 'windows'" class="credential-hint">
-            默认关闭。勾选后仅在本次任务中只读 QQMusic.exe 及 QQ 音乐自身的本地登录数据；不读取其他进程，不显示、不写入磁盘，任务结束即清除。
+          <p v-if="qqAutoLoginUIEnabled && runtimePlatform === 'windows'" class="credential-hint">
+            默认关闭。勾选后仅在本次任务中只读 QQMusic.exe 及 QQ 音乐自身的本地登录数据；不读取其他进程，不显示原始凭据、不写入磁盘，任务结束即清除。
           </p>
           <p v-else-if="!runtimePlatform" class="credential-hint">正在检测当前运行平台…</p>
           <button class="ghost" :disabled="isRunning" @click="showQQAdvanced = !showQQAdvanced">
@@ -156,39 +199,41 @@
           </button>
           <div v-if="showQQAdvanced" class="credential-advanced">
             <p class="credential-hint">
-              {{ isMobileRuntime ? '逐文件 EKey 只保存在当前页面内存。' : '仅在自动登录不可用时使用。Cookie 和逐文件 EKey 都只保存在当前页面内存。' }}
+              {{ isMobileRuntime ? '逐文件 EKey 只保存在当前页面内存。' : 'Cookie 和逐文件 EKey 都只保存在当前页面内存。' }}
             </p>
             <label v-if="!isMobileRuntime">
               临时 QQ Music Cookie
               <input
                 v-model="qqCookie"
-                :type="showQQSecrets ? 'text' : 'password'"
+                type="password"
                 autocomplete="off"
                 spellcheck="false"
                 :disabled="isRunning"
                 placeholder="qqmusic_key=... 或完整 Cookie"
               />
             </label>
-            <div class="credential-actions">
-              <button class="ghost" @click="showQQSecrets = !showQQSecrets">
-                {{ showQQSecrets ? '隐藏凭据' : '显示凭据' }}
+            <div v-if="!isMobileRuntime" class="credential-check-row">
+              <button
+                class="ghost"
+                :disabled="isRunning || qqCookieChecking || !qqCookie.trim()"
+                @click="checkQQCookie"
+              >
+                {{ qqCookieChecking ? '检测中…' : '检测 Cookie' }}
               </button>
+              <span>{{ cookieProbePath ? `将检测：${getFileName(cookieProbePath)}` : '未添加 MusicEx 文件时仅检查 Cookie 格式和账号' }}</span>
+            </div>
+            <p
+              v-if="qqCookieCheckMessage"
+              class="credential-status"
+              :class="`credential-status-${qqCookieCheckState}`"
+              role="status"
+            >
+              {{ qqCookieCheckMessage }}
+            </p>
+            <div class="credential-actions">
               <button class="ghost danger" :disabled="isRunning" @click="clearQQCredentials">清除手动凭据</button>
             </div>
           </div>
-        </section>
-
-        <section class="panel-section">
-          <h2>任务控制</h2>
-          <button class="start" :disabled="isRunning || runnableCount === 0" @click="startConvert">
-            开始转换 {{ runnableCount ? `(${runnableCount})` : '' }}
-          </button>
-          <button class="ghost" :disabled="!isRunning" @click="togglePause">
-            {{ isPaused ? '继续任务' : '暂停任务' }}
-          </button>
-          <button class="ghost danger" :disabled="!isRunning" @click="cancelAll">
-            取消任务
-          </button>
         </section>
 
         <section class="panel-section">
@@ -206,9 +251,11 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onBeforeUnmount, ref } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import {
   CancelFile,
+  CheckLocalQQMusicLogin,
+  CheckQQMusicCookie,
   ClearQQLoginCache,
   ConvertFile,
   GetDefaultOutputDir,
@@ -233,10 +280,18 @@ const keyword = ref('')
 const statusFilter = ref('all')
 const logs = ref([])
 const qqCookie = ref('')
+// 临时功能开关：自动授权代码保留但不向用户显示，也不会在转换时启用。
+// 完成后续验证后改为 true，即可恢复 Windows 自动授权入口。
+const qqAutoLoginUIEnabled = false
 const qqAutoLogin = ref(false)
 const runtimePlatform = ref('')
 const showQQAdvanced = ref(false)
-const showQQSecrets = ref(false)
+const qqCookieChecking = ref(false)
+const qqCookieCheckState = ref('idle')
+const qqCookieCheckMessage = ref('')
+const localQQChecking = ref(false)
+const localQQCheckState = ref('idle')
+const localQQCheckMessage = ref('')
 
 const platforms = {
   '.mp3': '标准音频',
@@ -295,6 +350,25 @@ const runnableCount = computed(() =>
   files.value.filter(file => ['pending', 'failed'].includes(file.status)).length
 )
 const isMobileRuntime = computed(() => ['android', 'ios'].includes(runtimePlatform.value))
+const cookieProbePath = computed(() => {
+  const candidates = files.value.filter(file => isQMC2Path(file.path))
+  return candidates.find(file => file.status === 'failed')?.path || candidates[0]?.path || ''
+})
+
+watch(qqCookie, () => {
+  qqCookieCheckState.value = 'idle'
+  qqCookieCheckMessage.value = ''
+})
+
+watch(qqAutoLogin, enabled => {
+  if (enabled && runtimePlatform.value === 'windows') {
+    checkLocalQQLogin()
+    return
+  }
+  localQQChecking.value = false
+  localQQCheckState.value = 'idle'
+  localQQCheckMessage.value = ''
+})
 
 const filteredFiles = computed(() => {
   const text = keyword.value.trim().toLowerCase()
@@ -310,7 +384,7 @@ onMounted(() => {
   GetRuntimePlatform()
     .then(platform => {
       runtimePlatform.value = platform
-      if (platform !== 'windows') {
+      if (platform !== 'windows' || !qqAutoLoginUIEnabled) {
         qqAutoLogin.value = false
         showQQAdvanced.value = true
       }
@@ -375,7 +449,7 @@ function addFiles(paths = []) {
         platform,
         status: supported ? 'pending' : 'unsupported',
         progress: 0,
-        message: protectedFormat ? 'QMC2/MusicEx：内嵌密钥可直接处理；新格式可自动使用本机 QQ 音乐登录状态。' : '',
+        message: protectedFormat ? 'QMC2/MusicEx：内嵌密钥可直接处理；新格式请使用临时 Cookie 或文件 EKey。' : '',
         qqEKey: ''
       }
     })
@@ -437,10 +511,61 @@ function isQQEncryptedPath(path) {
 
 function clearQQCredentials() {
   qqCookie.value = ''
-  showQQSecrets.value = false
+  qqCookieChecking.value = false
+  qqCookieCheckState.value = 'idle'
+  qqCookieCheckMessage.value = ''
   files.value.forEach(file => {
     file.qqEKey = ''
   })
+}
+
+async function checkLocalQQLogin() {
+  if (!qqAutoLogin.value || localQQChecking.value) return
+
+  localQQChecking.value = true
+  localQQCheckState.value = 'checking'
+  localQQCheckMessage.value = '正在读取并检测本机 QQ 音乐登录状态…'
+  try {
+    const result = await CheckLocalQQMusicLogin(cookieProbePath.value)
+    localQQCheckState.value = result?.state || 'parsed'
+    localQQCheckMessage.value = result?.message || '已读取本机登录状态，但没有返回检测说明'
+    addLog(`本机 QQ 音乐登录检测：${localQQCheckMessage.value}`)
+  } catch (err) {
+    localQQCheckState.value = 'error'
+    localQQCheckMessage.value = cleanError(err)
+    addLog(`本机 QQ 音乐登录检测失败：${localQQCheckMessage.value}`)
+  } finally {
+    localQQChecking.value = false
+  }
+}
+
+async function checkQQCookie() {
+  const cookie = qqCookie.value.trim()
+  if (!cookie || qqCookieChecking.value) return
+
+  qqCookieChecking.value = true
+  qqCookieCheckState.value = 'checking'
+  qqCookieCheckMessage.value = '正在检测 Cookie…'
+  try {
+    const result = await CheckQQMusicCookie(cookie, cookieProbePath.value)
+    qqCookieCheckState.value = result?.state || 'parsed'
+    qqCookieCheckMessage.value = result?.message || 'Cookie 已添加，但没有返回检测说明'
+    addLog(`Cookie 检测：${qqCookieCheckMessage.value}`)
+  } catch (err) {
+    qqCookieCheckState.value = 'error'
+    qqCookieCheckMessage.value = cleanError(err)
+    addLog(`Cookie 检测失败：${qqCookieCheckMessage.value}`)
+  } finally {
+    qqCookieChecking.value = false
+  }
+}
+
+function markPending(file) {
+  if (!file || file.status !== 'failed' || isRunning.value) return
+  file.status = 'pending'
+  file.progress = 0
+  file.message = '已改为待处理'
+  addLog(`改为待处理：${getFileName(file.path)}`)
 }
 
 function removeFile(id) {
@@ -491,7 +616,7 @@ async function startConvert() {
     .map(file => ({ file, qqEKey: file.qqEKey || '' }))
   const workerCount = Math.max(1, Math.min(Number(concurrency.value) || 1, 8, queue.length || 1))
   const qqCookieSnapshot = qqCookie.value
-  const qqAutoLoginSnapshot = runtimePlatform.value === 'windows' && qqAutoLogin.value
+  const qqAutoLoginSnapshot = qqAutoLoginUIEnabled && runtimePlatform.value === 'windows' && qqAutoLogin.value
   let cursor = 0
 
   if (qqAutoLoginSnapshot) {

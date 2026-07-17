@@ -42,6 +42,43 @@ func TestExtractQQAuthstCandidates(t *testing.T) {
 	}
 }
 
+func TestExtractQQAuthstCandidatesRejectsGetSongInfoQuery(t *testing.T) {
+	data := []byte(
+		"authst=0&sin=0&cv=2111&cmd=getsonginfo&qq=1000000000" +
+			"&songids=200000000&songtypes=0&ctx=1",
+	)
+	if got := extractQQAuthstCandidates(data); len(got) != 0 {
+		t.Fatalf("getsonginfo query was accepted as authst: %q", got)
+	}
+}
+
+func TestExtractQQWebKeyCandidates(t *testing.T) {
+	const (
+		qqKey = "Q_H_L_TestQQMusicKey_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		wxKey = "W_X_TestQQMusicKey_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	)
+	data := []byte(
+		`qqmusic_key=` + qqKey + `; path=/` + "\x00" +
+			`{\"qqmusic_key\": \"` + qqKey + `\"}` + "\x00" +
+			`{"qm_keyst":"` + wxKey + `"}`,
+	)
+	data = append(data, utf16LEASCII(`qm_keyst=`+wxKey+`;`)...)
+
+	got := extractQQWebKeyCandidates(data)
+	want := []string{
+		"qqmusic_key=" + qqKey,
+		"qm_keyst=" + wxKey,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("candidate count = %d, want %d", len(got), len(want))
+	}
+	for _, candidate := range want {
+		if !containsString(got, candidate) {
+			t.Fatalf("missing candidate type %q", strings.SplitN(candidate, "=", 2)[0])
+		}
+	}
+}
+
 func TestParseQQMusicUIN(t *testing.T) {
 	if got := parseQQMusicUIN([]byte("[User]\r\nUin=123456789\r\n")); got != "123456789" {
 		t.Fatalf("parseQQMusicUIN() = %q", got)
@@ -177,6 +214,133 @@ func TestAutoLoginDecryptsMusicExWithoutExposingCredential(t *testing.T) {
 	}
 }
 
+func TestFetchQQLocalEKeyPrefersWebKey(t *testing.T) {
+	const (
+		webValue = "Q_H_L_TestLocalWebKey_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		authst   = "TestFallbackAuthst_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	)
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		calls.Add(1)
+		if got := request.Header.Get("Cookie"); got != "uin=42; qqmusic_key="+webValue {
+			t.Errorf("unexpected Cookie header length: %d", len(got))
+		}
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(writer, "bad request", http.StatusBadRequest)
+			return
+		}
+		if _, ok := body["req_0"]; !ok {
+			t.Error("web-key request did not use req_0")
+		}
+		if _, ok := body["req_1"]; ok {
+			t.Error("authst fallback was used before the web key")
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"req_0":{"code":0,"data":{"midurlinfo":[{"filename":"test.mflac","ekey":"test-ekey","result":0}]}}}`))
+	}))
+	defer server.Close()
+	replaceQQAPIForTest(t, server)
+	replaceLocalQQCredentialProviderForTest(t, func(context.Context) (qqLocalCredentials, error) {
+		return qqLocalCredentials{
+			UIN:              "42",
+			WebKeyCandidates: []string{"qqmusic_key=" + webValue},
+			AuthstCandidates: []string{authst},
+		}, nil
+	})
+
+	got, err := fetchQQLocalEKey(context.Background(), "song-mid", "test.mflac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "test-ekey" || calls.Load() != 1 {
+		t.Fatalf("unexpected EKey length/call count: %d/%d", len(got), calls.Load())
+	}
+}
+
+func TestCheckLocalQQMusicLoginReturnsOnlyMaskedStatus(t *testing.T) {
+	const authst = "SensitiveLocalStatusAuthst_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	key := []byte("12345678")
+	encodedKey := base64.StdEncoding.EncodeToString(key)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"req_1":{"code":0,"data":{"midurlinfo":[{"filename":"test.mflac","ekey":"` + encodedKey + `","result":0}]}}}`))
+	}))
+	defer server.Close()
+	replaceQQAPIForTest(t, server)
+	replaceLocalQQCredentialProviderForTest(t, func(context.Context) (qqLocalCredentials, error) {
+		return qqLocalCredentials{UIN: "1234567890", AuthstCandidates: []string{authst}}, nil
+	})
+
+	path := filepath.Join(t.TempDir(), "test.mflac")
+	if err := os.WriteFile(path, makeMusicExData([]byte{1, 2, 3, 4}, 1, "song-mid", "test.mflac"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := CheckLocalQQMusicLogin(context.Background(), path)
+	if err != nil {
+		t.Fatalf("CheckLocalQQMusicLogin() error = %v", err)
+	}
+	if result.State != "authorized" || result.Account != "123****890" {
+		t.Fatalf("unexpected local login result: %#v", result)
+	}
+	serialized, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{authst, encodedKey, "1234567890"} {
+		if strings.Contains(string(serialized), secret) {
+			t.Fatalf("local login result exposed sensitive value of length %d", len(secret))
+		}
+	}
+}
+
+func TestCheckLocalQQMusicLoginSupportsWebKeyWithoutExposingCredential(t *testing.T) {
+	const webValue = "Q_H_L_LocalStatusWebKey_0123456789_ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	key := []byte("12345678")
+	encodedKey := base64.StdEncoding.EncodeToString(key)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if _, ok := body["req_0"]; !ok {
+			t.Error("local web key did not use the web endpoint")
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"req_0":{"code":0,"data":{"midurlinfo":[{"filename":"test.mflac","ekey":"` + encodedKey + `","result":0}]}}}`))
+	}))
+	defer server.Close()
+	replaceQQAPIForTest(t, server)
+	replaceLocalQQCredentialProviderForTest(t, func(context.Context) (qqLocalCredentials, error) {
+		return qqLocalCredentials{
+			UIN:              "1234567890",
+			WebKeyCandidates: []string{"qqmusic_key=" + webValue},
+		}, nil
+	})
+
+	path := filepath.Join(t.TempDir(), "test.mflac")
+	if err := os.WriteFile(path, makeMusicExData([]byte{1, 2, 3, 4}, 1, "song-mid", "test.mflac"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := CheckLocalQQMusicLogin(context.Background(), path)
+	if err != nil {
+		t.Fatalf("CheckLocalQQMusicLogin() error = %v", err)
+	}
+	if result.State != "authorized" || result.LoginType != "2" || result.Account != "123****890" {
+		t.Fatalf("unexpected local login result: %#v", result)
+	}
+	serialized, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{webValue, encodedKey, "1234567890"} {
+		if strings.Contains(string(serialized), secret) {
+			t.Fatalf("local login result exposed sensitive value of length %d", len(secret))
+		}
+	}
+}
+
 func TestOptionalLocalQQMusicLogin(t *testing.T) {
 	if os.Getenv("QMC_TEST_LOCAL_QQ_LOGIN") != "1" {
 		t.Skip("set QMC_TEST_LOCAL_QQ_LOGIN=1 to test the running QQ Music client")
@@ -185,14 +349,25 @@ func TestOptionalLocalQQMusicLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(credentials.AuthstCandidates) == 0 {
+	if len(credentials.WebKeyCandidates) == 0 && len(credentials.AuthstCandidates) == 0 {
 		t.Fatal("no local QQ Music login token was found")
+	}
+	for _, candidate := range credentials.WebKeyCandidates {
+		_, value, found := strings.Cut(candidate, "=")
+		if !found || !isPlausibleQQWebKey(value) {
+			t.Fatal("local QQ Music web key did not pass validation")
+		}
 	}
 	for _, candidate := range credentials.AuthstCandidates {
 		if !isPlausibleQQAuthst(candidate) {
 			t.Fatal("local QQ Music login token did not pass validation")
 		}
 	}
+	t.Logf(
+		"validated %d web-key candidate(s) and %d desktop-token candidate(s)",
+		len(credentials.WebKeyCandidates),
+		len(credentials.AuthstCandidates),
+	)
 }
 
 func replaceLocalQQCredentialProviderForTest(

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,6 +24,7 @@ func TestNormalizeQQCookie(t *testing.T) {
 		{name: "raw padded token", input: "abc123==", want: "qqmusic_key=abc123=="},
 		{name: "named token", input: "qqmusic_key=abc123==", want: "qqmusic_key=abc123=="},
 		{name: "full cookie", input: "uin=42; qqmusic_key=abc", want: "uin=42; qqmusic_key=abc"},
+		{name: "copied header", input: "Cookie: uin=42; qqmusic_key=abc", want: "uin=42; qqmusic_key=abc"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -70,6 +73,94 @@ func TestFetchQQWebEKeyRequest(t *testing.T) {
 	}
 	if got != "test-ekey" {
 		t.Fatalf("EKey = %q", got)
+	}
+}
+
+func TestFetchQQWebEKeyUsesCookieLoginTypeAndMatchingUIN(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		comm, _ := body["comm"].(map[string]any)
+		if got := comm["tmeLoginType"]; got != "2" {
+			t.Errorf("tmeLoginType = %#v, want 2", got)
+		}
+		req0, _ := body["req_0"].(map[string]any)
+		param, _ := req0["param"].(map[string]any)
+		if got := param["uin"]; got != "1234567890" {
+			t.Errorf("uin = %#v, want Cookie QQ account", got)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"req_0":{"code":0,"data":{"midurlinfo":[{"filename":"test.mflac","ekey":"test-ekey","result":0}]}}}`))
+	}))
+	defer server.Close()
+	replaceQQAPIForTest(t, server)
+
+	_, err := fetchQQWebEKey(
+		context.Background(),
+		"song-mid",
+		"test.mflac",
+		"wxuin=9988; uin=1234567890; login_type=1; tmeLoginType=2; qqmusic_key=Q_H_L_test",
+	)
+	if err != nil {
+		t.Fatalf("fetchQQWebEKey() error = %v", err)
+	}
+}
+
+func TestQQCookieLoginIdentity(t *testing.T) {
+	qqCookie := "wxuin=9988; uin=1234567890; login_type=1; tmeLoginType=2; qqmusic_key=Q_H_L_test"
+	if got := qqCookieUIN(qqCookie); got != "1234567890" {
+		t.Fatalf("QQ login UIN = %q", got)
+	}
+
+	wechatCookie := "wxuin=9988; uin=1234567890; tmeLoginType=1; qqmusic_key=W_X_test"
+	if got := qqCookieUIN(wechatCookie); got != "9988" {
+		t.Fatalf("WeChat login UIN = %q", got)
+	}
+
+	if _, err := qqCookieLoginType("tmeLoginType=1", "Q_H_L_test"); err == nil {
+		t.Fatal("conflicting login type was accepted")
+	}
+}
+
+func TestCheckQQMusicCookieReportsAuthorizationState(t *testing.T) {
+	key := []byte("12345678")
+	encodedKey := base64.StdEncoding.EncodeToString(key)
+	var resultCode atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if resultCode.Load() == 104003 {
+			_, _ = writer.Write([]byte(`{"req_0":{"code":0,"data":{"midurlinfo":[{"filename":"test.mflac","ekey":"","result":104003}]}}}`))
+			return
+		}
+		_, _ = writer.Write([]byte(`{"req_0":{"code":0,"data":{"midurlinfo":[{"filename":"test.mflac","ekey":"` + encodedKey + `","result":0}]}}}`))
+	}))
+	defer server.Close()
+	replaceQQAPIForTest(t, server)
+
+	path := filepath.Join(t.TempDir(), "test.mflac")
+	data := makeMusicExData([]byte{1, 2, 3, 4}, 1, "song-mid", "test.mflac")
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cookie := "uin=42; tmeLoginType=2; qqmusic_key=Q_H_L_test"
+
+	result, err := CheckQQMusicCookie(context.Background(), cookie, path)
+	if err != nil {
+		t.Fatalf("CheckQQMusicCookie() error = %v", err)
+	}
+	if result.State != "authorized" || !strings.Contains(result.Message, "验证成功") {
+		t.Fatalf("authorized result = %#v", result)
+	}
+
+	resultCode.Store(104003)
+	result, err = CheckQQMusicCookie(context.Background(), cookie, path)
+	if err != nil {
+		t.Fatalf("CheckQQMusicCookie() unauthorized error = %v", err)
+	}
+	if result.State != "unauthorized" || !strings.Contains(result.Message, "104003") {
+		t.Fatalf("unauthorized result = %#v", result)
 	}
 }
 

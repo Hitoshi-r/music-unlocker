@@ -9,6 +9,7 @@ import (
 	stdRuntime "runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"music-unlocker/decoder"
 
@@ -164,6 +165,33 @@ func progressEmit(a *App, path string) decoder.ProgressCallback {
 // conversion batch. No credential is returned to the frontend.
 func (a *App) ClearQQLoginCache() {
 	decoder.ClearQQMusicLoginCache()
+}
+
+// CheckQQMusicCookie validates a temporary Cookie against the selected
+// MusicEx file without returning the Cookie or EKey to the frontend.
+func (a *App) CheckQQMusicCookie(cookie string, path string) (decoder.QQCookieCheckResult, error) {
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	return decoder.CheckQQMusicCookie(ctx, strings.TrimSpace(cookie), strings.TrimSpace(path))
+}
+
+// CheckLocalQQMusicLogin reports only masked account and authorization status.
+// Raw local credentials and fetched EKeys never cross the backend boundary.
+func (a *App) CheckLocalQQMusicLogin(path string) (decoder.QQCookieCheckResult, error) {
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	decoder.ClearQQMusicLoginCache()
+	return decoder.CheckLocalQQMusicLogin(ctx, strings.TrimSpace(path))
 }
 
 func (a *App) ConvertFile(

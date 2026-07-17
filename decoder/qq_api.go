@@ -38,6 +38,17 @@ type qqMidURLInfo struct {
 	Result   int    `json:"result"`
 }
 
+type qqEKeyResultError struct {
+	Result int
+}
+
+func (err *qqEKeyResultError) Error() string {
+	if err.Result == 104003 {
+		return "QQ 音乐服务器未为当前文件返回 EKey（result=104003）：可能是登录类型或账号不匹配、下载账号不同、会员/购买或高阶音质权限失效，或试听/版权限制"
+	}
+	return fmt.Sprintf("QQ 音乐未授权该歌曲（result=%d）", err.Result)
+}
+
 func fetchQQEKey(ctx context.Context, songMID string, filename string, cookie string) (string, error) {
 	cookie = normalizeQQCookie(cookie)
 	if cookie == "" {
@@ -45,6 +56,9 @@ func fetchQQEKey(ctx context.Context, songMID string, filename string, cookie st
 	}
 	if len(cookie) > 32*1024 {
 		return "", errors.New("QQ Music Cookie 长度异常")
+	}
+	if strings.ContainsAny(cookie, "\r\n\x00") {
+		return "", errors.New("QQ Music Cookie 包含无效换行或控制字符")
 	}
 
 	ekey, webErr := fetchQQWebEKey(ctx, songMID, filename, cookie)
@@ -76,7 +90,11 @@ func fetchQQWebEKey(ctx context.Context, songMID string, filename string, cookie
 	if key == "" {
 		return "", errors.New("Cookie 中缺少 qqmusic_key 或 qm_keyst")
 	}
-	uin := qqCookieUIN(cookie)
+	loginType, err := qqCookieLoginType(cookie, key)
+	if err != nil {
+		return "", err
+	}
+	uin := qqCookieUINForLogin(cookie, loginType)
 	token := qqGTK(key)
 
 	body := map[string]any{
@@ -101,7 +119,7 @@ func fetchQQWebEKey(ctx context.Context, songMID string, filename string, cookie
 			"chid":              "0",
 			"g_tk":              token,
 			"g_tk_new_20200303": token,
-			"tmeLoginType":      "1",
+			"tmeLoginType":      loginType,
 			"inCharset":         "utf-8",
 			"outCharset":        "utf-8",
 			"notice":            0,
@@ -204,10 +222,7 @@ func requestQQEKey(
 	}
 	info := result.Data.MidURLInfo[0]
 	if info.Result != 0 {
-		if info.Result == 104003 {
-			return "", errors.New("QQ 音乐未授权该歌曲（result=104003）：当前登录账号没有返回该文件的解密权限，常见原因是下载账号与当前账号不同，或会员/购买权限已失效")
-		}
-		return "", fmt.Errorf("QQ 音乐未授权该歌曲（result=%d）", info.Result)
+		return "", &qqEKeyResultError{Result: info.Result}
 	}
 	if strings.TrimSpace(info.EKey) == "" {
 		return "", errors.New("QQ 音乐接口返回了空 EKey，登录可能已过期或账号无歌曲权限")
@@ -220,6 +235,9 @@ func normalizeQQCookie(cookie string) string {
 	if cookie == "" {
 		return ""
 	}
+	if strings.HasPrefix(strings.ToLower(cookie), "cookie:") {
+		cookie = strings.TrimSpace(cookie[len("cookie:"):])
+	}
 	lower := strings.ToLower(cookie)
 	if strings.Contains(cookie, ";") ||
 		strings.HasPrefix(lower, "qqmusic_key=") ||
@@ -228,6 +246,50 @@ func normalizeQQCookie(cookie string) string {
 		return cookie
 	}
 	return "qqmusic_key=" + cookie
+}
+
+func qqCookieLoginType(cookie string, key string) (string, error) {
+	explicit := strings.TrimSpace(cookieValue(cookie, "tmeLoginType"))
+	if explicit != "" && explicit != "1" && explicit != "2" {
+		return "", errors.New("Cookie 中的 tmeLoginType 无效")
+	}
+
+	inferred := ""
+	upperKey := strings.ToUpper(strings.TrimSpace(key))
+	switch {
+	case strings.HasPrefix(upperKey, "W_X_"):
+		inferred = "1"
+	case strings.HasPrefix(upperKey, "Q_H_L_"):
+		inferred = "2"
+	}
+	if inferred == "" {
+		switch strings.TrimSpace(cookieValue(cookie, "login_type")) {
+		case "1":
+			inferred = "2"
+		case "2":
+			inferred = "1"
+		}
+	}
+	if inferred == "" {
+		if numericQQCookieValue(cookie, "wxuin") != "" {
+			inferred = "1"
+		} else if numericQQCookieValue(cookie, "uin") != "" {
+			inferred = "2"
+		}
+	}
+
+	if explicit != "" {
+		if inferred != "" && explicit != inferred {
+			return "", errors.New("Cookie 的登录类型与密钥类型冲突，请重新复制当前账号的完整 Cookie")
+		}
+		return explicit, nil
+	}
+	if inferred != "" {
+		return inferred, nil
+	}
+	// Raw qqmusic_key values are normally QQ-login keys. A full Cookie can
+	// override this through tmeLoginType or login_type.
+	return "2", nil
 }
 
 func cookieValue(cookie string, name string) string {
@@ -241,23 +303,44 @@ func cookieValue(cookie string, name string) string {
 }
 
 func qqCookieUIN(cookie string) string {
-	for _, name := range []string{"wxuin", "uin", "euin"} {
-		value := strings.TrimLeft(cookieValue(cookie, name), "oO")
-		if value == "" {
-			continue
-		}
-		valid := true
-		for _, char := range value {
-			if char < '0' || char > '9' {
-				valid = false
-				break
-			}
-		}
-		if valid {
+	key := cookieValue(cookie, "qqmusic_key")
+	if key == "" {
+		key = cookieValue(cookie, "qm_keyst")
+	}
+	loginType, err := qqCookieLoginType(cookie, key)
+	if err != nil {
+		return "0"
+	}
+	return qqCookieUINForLogin(cookie, loginType)
+}
+
+func qqCookieUINForLogin(cookie string, loginType string) string {
+	names := []string{"uin"}
+	if loginType == "1" {
+		names = []string{"wxuin", "uin"}
+	}
+	for _, name := range names {
+		if value := numericQQCookieValue(cookie, name); value != "" {
 			return value
 		}
 	}
 	return "0"
+}
+
+func numericQQCookieValue(cookie string, name string) string {
+	value := strings.TrimSpace(cookieValue(cookie, name))
+	if len(value) > 1 && (value[0] == 'o' || value[0] == 'O') {
+		value = value[1:]
+	}
+	if value == "" {
+		return ""
+	}
+	for _, char := range value {
+		if char < '0' || char > '9' {
+			return ""
+		}
+	}
+	return value
 }
 
 func qqGTK(key string) uint32 {
