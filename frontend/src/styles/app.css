@@ -16,7 +16,7 @@ body {
   margin: 0;
   min-width: 980px;
   min-height: 680px;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
   background: var(--bg);
   color: var(--text);
 }
@@ -29,8 +29,6 @@ select {
 
 .app {
   min-height: 100vh;
-  padding-top: env(safe-area-inset-top, 0);
-  padding-bottom: env(safe-area-inset-bottom, 0);
   background:
     linear-gradient(180deg, rgba(56, 217, 150, 0.08), transparent 260px),
     var(--bg);
@@ -246,16 +244,6 @@ h2 {
   margin-top: 6px;
 }
 
-.file-credential {
-  margin-top: 10px;
-}
-
-.file-credential input {
-  width: 100%;
-  min-height: 34px;
-  font-size: 12px;
-}
-
 .progress {
   height: 5px;
   margin-top: 10px;
@@ -362,90 +350,6 @@ button:disabled {
   text-align: left;
 }
 
-.credential-hint {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-  text-align: left;
-}
-
-.qq-auto-login {
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: #13161b;
-  cursor: pointer;
-}
-
-.qq-auto-login input {
-  width: 18px;
-  min-height: 18px;
-  margin: 1px 0 0;
-  flex: 0 0 18px;
-  accent-color: var(--accent);
-}
-
-.qq-auto-login span,
-.qq-auto-login strong,
-.qq-auto-login small {
-  display: block;
-}
-
-.qq-auto-login strong {
-  color: var(--text);
-  font-size: 13px;
-  line-height: 1.35;
-}
-
-.qq-auto-login small {
-  margin-top: 5px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.platform-notice {
-  padding: 10px;
-  border: 1px solid rgba(110, 168, 254, 0.35);
-  border-radius: 6px;
-  background: rgba(110, 168, 254, 0.08);
-  text-align: left;
-}
-
-.platform-notice strong,
-.platform-notice span {
-  display: block;
-}
-
-.platform-notice strong {
-  color: var(--accent-2);
-  font-size: 13px;
-}
-
-.platform-notice span {
-  margin-top: 5px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.credential-advanced {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-top: 2px;
-}
-
-.credential-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
 .log-list {
   max-height: 210px;
   overflow: auto;
@@ -461,112 +365,4 @@ button:disabled {
   margin: 4px 0 0;
   font-size: 12px;
   line-height: 1.45;
-}
-
-@media (max-width: 900px) {
-  body {
-    min-width: 0;
-    min-height: 0;
-  }
-
-  .topbar {
-    height: auto;
-    min-height: 96px;
-    padding: 16px 18px;
-    gap: 18px;
-  }
-
-  .summary {
-    grid-template-columns: repeat(3, minmax(76px, 1fr));
-  }
-
-  .layout {
-    height: auto;
-    min-height: calc(100vh - 96px);
-    grid-template-columns: 1fr;
-  }
-
-  .workspace {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .toolbar {
-    grid-template-columns: minmax(220px, 1fr) repeat(2, auto);
-  }
-
-  .file-list {
-    overflow: visible;
-    padding-right: 0;
-  }
-
-  .side-panel {
-    border-width: 1px 0 0;
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    overflow: visible;
-  }
-}
-
-@media (max-width: 600px) {
-  button,
-  input,
-  select {
-    min-height: 44px;
-  }
-
-  .topbar {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .summary {
-    width: 100%;
-  }
-
-  .summary div {
-    padding: 10px;
-  }
-
-  .workspace,
-  .side-panel {
-    padding: 12px;
-  }
-
-  .drop-zone {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .toolbar {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .toolbar input {
-    grid-column: 1 / -1;
-  }
-
-  .file-head {
-    flex-direction: column;
-  }
-
-  .file-actions {
-    justify-content: space-between;
-  }
-
-  .file-title strong,
-  .file-title span,
-  .file-path,
-  .message {
-    white-space: normal;
-    overflow-wrap: anywhere;
-  }
-
-  .side-panel {
-    display: flex;
-  }
-
-  .credential-actions {
-    grid-template-columns: 1fr;
-  }
 }

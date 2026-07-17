@@ -1,16 +1,8 @@
-# Music Unlocker 前端
+# Vue 3 + Vite
 
-该目录是 Music Unlocker 的 Vue 3 + Vite 界面，由 Wails 调用。
+This template should help get you started developing with Vue 3 in Vite. The template uses Vue 3 `<script setup>` SFCs,
+check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
 
-- `src/App.vue`：主界面和任务队列交互；
-- `src/styles/app.css`：应用布局、桌面与移动端响应式样式；
-- `src/style.css`：全局字体和页面基础样式；
-- `wailsjs/`：Wails 生成的 Go/JavaScript 绑定，请勿手工编辑；
-- `dist/`：`npm run build` 生成的静态资源，不提交仓库。
+## Recommended IDE Setup
 
-```bash
-npm ci
-npm run build
-```
-
-完整开发、测试和目录约定见 [`../docs/development.md`](../docs/development.md)。
+- [VS Code](https://code.visualstudio.com/) + [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar)
