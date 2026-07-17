@@ -10,6 +10,7 @@ var registeredDecoders = []Decoder{
 	NewPlainAudioDecoder(),
 	&NCMDecoder{},
 	NewQMCDecoder(),
+	NewMFLACDecoder(),
 	&KGMDecoder{},
 	&KWMDecoder{},
 	&XMDecoder{},

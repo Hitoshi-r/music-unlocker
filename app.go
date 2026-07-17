@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	stdRuntime "runtime"
 	"strings"
-	"sync"
 
 	"music-unlocker/decoder"
 
@@ -17,7 +16,6 @@ import (
 
 type App struct {
 	ctx       context.Context
-	cancelMu  sync.Mutex
 	cancelMap map[string]context.CancelFunc
 }
 
@@ -81,10 +79,8 @@ func (a *App) SelectFolderFiles() ([]string, error) {
 }
 
 func (a *App) SelectOutputDir() (string, error) {
-	defaultDir, _ := ensureOutputDir("")
 	dir, err := runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
-		Title:            "选择输出目录",
-		DefaultDirectory: defaultDir,
+		Title: "选择输出目录",
 	})
 	if err != nil || dir == "" {
 		return "", err
@@ -94,46 +90,9 @@ func (a *App) SelectOutputDir() (string, error) {
 	return dir, nil
 }
 
-func defaultOutputDir() (string, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("获取用户目录失败: %w", err)
-	}
-
-	return filepath.Join(homeDir, "Music", "Music Unlocker"), nil
-}
-
-func ensureOutputDir(outputDir string) (string, error) {
-	outputDir = strings.TrimSpace(outputDir)
-	if outputDir == "" {
-		var err error
-		outputDir, err = defaultOutputDir()
-		if err != nil {
-			return "", err
-		}
-	}
-
-	outputDir = filepath.Clean(outputDir)
-	if err := os.MkdirAll(outputDir, 0755); err != nil {
-		return "", fmt.Errorf("创建输出目录失败: %w", err)
-	}
-
-	return outputDir, nil
-}
-
-func (a *App) GetDefaultOutputDir() (string, error) {
-	return ensureOutputDir("")
-}
-
-func (a *App) GetRuntimePlatform() string {
-	return stdRuntime.GOOS
-}
-
 func (a *App) OpenFolder(path string) error {
-	var err error
-	path, err = ensureOutputDir(path)
-	if err != nil {
-		return err
+	if path == "" {
+		return nil
 	}
 
 	var cmd *exec.Cmd
@@ -160,27 +119,16 @@ func progressEmit(a *App, path string) decoder.ProgressCallback {
 	}
 }
 
-// ClearQQLoginCache removes the short-lived QQ Music login snapshot after a
-// conversion batch. No credential is returned to the frontend.
-func (a *App) ClearQQLoginCache() {
-	decoder.ClearQQMusicLoginCache()
-}
-
-func (a *App) ConvertFile(
-	path string,
-	outputDir string,
-	outputFormat string,
-	bitrate string,
-	qqEKey string,
-	qqCookie string,
-	qqAutoLogin bool,
-) (string, error) {
+func (a *App) ConvertFile(path string, outputDir string, outputFormat string, bitrate string) (string, error) {
 	fmt.Println("ConvertFile:", path, outputDir, outputFormat, bitrate)
 
-	var err error
-	outputDir, err = ensureOutputDir(outputDir)
-	if err != nil {
-		return "", err
+	if strings.TrimSpace(outputDir) == "" {
+		outputDir = filepath.Dir(path)
+		fmt.Println("未选择输出目录，使用原文件目录:", outputDir)
+	}
+
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return "", fmt.Errorf("创建输出目录失败: %v", err)
 	}
 
 	item := decoder.FindByPath(path)
@@ -189,21 +137,10 @@ func (a *App) ConvertFile(
 	}
 
 	ctx, cancel := context.WithCancel(a.ctx)
-	a.cancelMu.Lock()
 	a.cancelMap[path] = cancel
-	a.cancelMu.Unlock()
-	defer func() {
-		a.cancelMu.Lock()
-		delete(a.cancelMap, path)
-		a.cancelMu.Unlock()
-	}()
+	defer delete(a.cancelMap, path)
 
-	options := decoder.DecodeOptions{
-		QQEKey:      strings.TrimSpace(qqEKey),
-		QQCookie:    strings.TrimSpace(qqCookie),
-		QQAutoLogin: qqAutoLogin,
-	}
-	result, err := item.Decode(path, outputDir, outputFormat, bitrate, options, ctx, progressEmit(a, path))
+	result, err := item.Decode(path, outputDir, outputFormat, bitrate, ctx, progressEmit(a, path))
 	if err != nil {
 		fmt.Println("Decode error:", err)
 		return "", fmt.Errorf(formatError(err))
@@ -219,8 +156,6 @@ func (a *App) ConvertFile(
 }
 
 func (a *App) CancelFile(path string) {
-	a.cancelMu.Lock()
-	defer a.cancelMu.Unlock()
 	if cancel, ok := a.cancelMap[path]; ok {
 		cancel()
 	}
@@ -232,12 +167,8 @@ func detectPlatform(path string) string {
 
 func formatError(err error) string {
 	msg := err.Error()
-	lowerMsg := strings.ToLower(msg)
 
-	if strings.Contains(lowerMsg, "找不到 ffmpeg") || strings.Contains(msg, "MUSIC_UNLOCKER_FFMPEG") {
-		return msg
-	}
-	if strings.Contains(lowerMsg, "ffmpeg") {
+	if strings.Contains(msg, "ffmpeg") {
 		return "转换失败：格式不支持或文件损坏"
 	}
 	if strings.Contains(msg, "暂不支持") || strings.Contains(msg, "尚未实现") {
